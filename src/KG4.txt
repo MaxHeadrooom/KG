@@ -1,0 +1,269 @@
+#include <GL/glew.h>
+#include <SFML/Window.hpp>
+#include <SFML/OpenGL.hpp>
+#include <vector>
+#include <cmath>
+#include <iostream>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+// Структура вершины
+struct Vertex {
+    float x, y, z;   // Позиция
+    float nx, ny, nz; // Нормаль
+};
+
+// Функция для генерации сферы
+void generateSphere(float radius, int longitude, int latitude, std::vector<Vertex>& vertices, std::vector<GLuint>& indices) {
+    for (int lat = 0; lat <= latitude; ++lat) {
+        float theta = lat * acos(-1) / latitude; // Угол широты
+        float sinTheta = sin(theta);
+        float cosTheta = cos(theta);
+
+        for (int lon = 0; lon <= longitude; ++lon) {
+            float phi = lon * 2.0f * acos(-1) / longitude; // Угол долготы
+            float sinPhi = sin(phi);
+            float cosPhi = cos(phi);
+
+            // Положение вершины
+            float x = radius * cosPhi * sinTheta;
+            float y = radius * cosTheta;
+            float z = radius * sinPhi * sinTheta;
+
+            // Нормаль вершины
+            float nx = cosPhi * sinTheta;
+            float ny = cosTheta;
+            float nz = sinPhi * sinTheta;
+
+            vertices.push_back({ x, y, z, nx, ny, nz });
+        }
+    }
+
+    for (int lat = 0; lat < latitude; ++lat) {
+        for (int lon = 0; lon < longitude; ++lon) {
+            int first = lat * (longitude + 1) + lon;
+            int second = first + longitude + 1;
+
+            indices.push_back(first);
+            indices.push_back(second);
+            indices.push_back(first + 1);
+
+            indices.push_back(second);
+            indices.push_back(second + 1);
+            indices.push_back(first + 1);
+        }
+    }
+}
+
+// Компиляция шейдера
+GLuint compileShader(const char* source, GLenum type) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    // Проверка на ошибки
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
+        std::cerr << "Ошибка компиляции шейдера: " << infoLog << std::endl;
+    }
+    return shader;
+}
+
+// Создание программы
+GLuint createShaderProgram(const char* vertexSource, const char* fragmentSource) {
+    GLuint vertexShader = compileShader(vertexSource, GL_VERTEX_SHADER);
+    GLuint fragmentShader = compileShader(fragmentSource, GL_FRAGMENT_SHADER);
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+
+    // Проверка на ошибки
+    GLint success;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(program, 512, nullptr, infoLog);
+        std::cerr << "Ошибка линковки программы: " << infoLog << std::endl;
+    }
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    return program;
+}
+
+// Вершинный шейдер для Gouraud Shading
+const char* gouraudVertexShader = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+uniform vec3 lightPos;
+uniform vec3 lightColor;
+uniform vec3 viewPos;
+uniform vec3 objectColor;
+
+out vec3 vertexColor;
+
+void main() {
+    vec3 normal = normalize(mat3(transpose(inverse(model))) * aNormal);
+    vec3 lightDir = normalize(lightPos - vec3(model * vec4(aPos, 1.0)));
+    float diff = max(dot(normal, lightDir), 0.0);
+
+    vec3 viewDir = normalize(viewPos - vec3(model * vec4(aPos, 1.0)));
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+
+    vec3 ambient = 0.1 * lightColor;
+    vec3 diffuse = diff * lightColor;
+    vec3 specular = spec * lightColor;
+
+    vertexColor = (ambient + diffuse + specular) * objectColor;
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+)";
+
+// Фрагментный шейдер для Gouraud Shading
+const char* gouraudFragmentShader = R"(
+#version 330 core
+in vec3 vertexColor;
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(vertexColor, 1.0);
+}
+)";
+
+// Вершинный шейдер для Flat Shading
+const char* flatVertexShader = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+uniform vec3 lightPos;
+uniform vec3 lightColor;
+uniform vec3 viewPos;
+uniform vec3 objectColor;
+
+out vec3 flatColor;
+
+void main() {
+    // Расчет освещения для одной вершины
+    vec3 normal = normalize(mat3(transpose(inverse(model))) * aNormal);
+    vec3 lightDir = normalize(lightPos - vec3(model * vec4(aPos, 1.0)));
+    float diff = max(dot(normal, lightDir), 0.0);
+
+    vec3 ambient = 0.1 * lightColor;
+    vec3 diffuse = diff * lightColor;
+
+    flatColor = (ambient + diffuse) * objectColor;
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+)";
+
+// Фрагментный шейдер для Flat Shading
+const char* flatFragmentShader = R"(
+#version 330 core
+in vec3 flatColor;
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(flatColor, 1.0);
+}
+)";
+
+int main() {
+    // Настройка окна
+    sf::Window window(sf::VideoMode(800, 600), "Gouraud and Flat Shading", sf::Style::Default, sf::ContextSettings(24));
+    window.setActive(true);
+    glewInit();
+
+    glEnable(GL_DEPTH_TEST);
+
+    // Генерация сферы
+    std::vector<Vertex> vertices;
+    std::vector<GLuint> indices;
+    generateSphere(1.0f, 36, 18, vertices, indices);
+
+    // Создание VAO, VBO и EBO
+    GLuint VAO, VBO, EBO;
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
+
+    glBindVertexArray(VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // Изначально выбираем Gouraud Shading
+    GLuint gouraudShaderProgram = createShaderProgram(gouraudVertexShader, gouraudFragmentShader);
+    GLuint flatShaderProgram = createShaderProgram(flatVertexShader, flatFragmentShader);
+    GLuint shaderProgram = gouraudShaderProgram;
+
+    // Матрицы трансформации
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 3.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
+
+    bool useGouraud = true;
+
+    // Основной цикл
+    while (window.isOpen()) {
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed)
+                window.close();
+
+            // Переключение между шейдерами
+            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Space) {
+                useGouraud = !useGouraud;
+                shaderProgram = useGouraud ? gouraudShaderProgram : flatShaderProgram;
+            }
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glUseProgram(shaderProgram);
+
+        // Передача матриц и параметров света
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glUniform3f(glGetUniformLocation(shaderProgram, "lightPos"), 1.2f, 1.0f, 2.0f);
+        glUniform3f(glGetUniformLocation(shaderProgram, "lightColor"), 1.0f, 1.0f, 1.0f);
+        glUniform3f(glGetUniformLocation(shaderProgram, "viewPos"), 0.0f, 0.0f, 3.0f);
+        glUniform3f(glGetUniformLocation(shaderProgram, "objectColor"), 1.0f, 0.5f, 0.31f);
+
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+
+        window.display();
+    }
+
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &EBO);
+    return 0;
+}

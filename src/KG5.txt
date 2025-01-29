@@ -1,0 +1,184 @@
+#include <SFML/Graphics.hpp>
+#include <SFML/OpenGL.hpp>
+#include <glm/glm.hpp>
+#include <glm/vec3.hpp>
+#include <glm/geometric.hpp>
+#include <iostream>
+#include <vector>
+
+// Глобальные параметры модели Фонга
+float ambientStrength = 0.1f;
+float diffuseStrength = 1.0f;
+float specularStrength = 0.5f;
+int shininess = 32;
+
+struct Ray {
+    glm::vec3 origin;
+    glm::vec3 direction;
+};
+
+struct Sphere {
+    glm::vec3 center;
+    float radius;
+    sf::Color color;
+
+    bool intersect(const Ray& ray, float& t) const {
+        glm::vec3 oc = ray.origin - center;
+        float a = glm::dot(ray.direction, ray.direction);
+        float b = 2.0f * glm::dot(oc, ray.direction);
+        float c = glm::dot(oc, oc) - radius * radius;
+        float discriminant = b * b - 4 * a * c;
+
+        if (discriminant < 0) return false;
+        t = (-b - sqrt(discriminant)) / (2.0f * a);
+        return t > 0;
+    }
+};
+
+struct Plane {
+    glm::vec3 point;
+    glm::vec3 normal;
+    sf::Color color;
+
+    bool intersect(const Ray& ray, float& t) const {
+        float denom = glm::dot(normal, ray.direction);
+        if (fabs(denom) < 1e-6) return false;
+        t = glm::dot(point - ray.origin, normal) / denom;
+        return t > 0;
+    }
+};
+
+// Освещение по модели Фонга
+glm::vec3 phongShading(const glm::vec3& point, const glm::vec3& normal, const glm::vec3& viewDir, const glm::vec3& lightDir, const sf::Color& objectColor) {
+    // Окружающее освещение
+    glm::vec3 ambient = ambientStrength * glm::vec3(objectColor.r, objectColor.g, objectColor.b) / 255.0f;
+
+    // Диффузное освещение
+    float diff = glm::max(glm::dot(normal, lightDir), 0.0f);
+    glm::vec3 diffuse = diffuseStrength * diff * glm::vec3(objectColor.r, objectColor.g, objectColor.b) / 255.0f;
+
+    // Зеркальное освещение
+    glm::vec3 reflectDir = glm::reflect(-lightDir, normal);
+    float spec = pow(glm::max(glm::dot(viewDir, reflectDir), 0.0f), shininess);
+    glm::vec3 specular = specularStrength * spec * glm::vec3(1.0f, 1.0f, 1.0f);
+
+    return ambient + diffuse + specular;
+}
+
+// Основная функция трассировки
+sf::Color traceRay(const Ray& ray, const std::vector<Sphere>& spheres, const Plane& plane, const glm::vec3& lightPos) {
+    float t_min = FLT_MAX;
+    glm::vec3 hitPoint, normal, color;
+    bool hit = false;
+
+    // Пересечение с сферой
+    for (const auto& sphere : spheres) {
+        float t;
+        if (sphere.intersect(ray, t) && t < t_min) {
+            t_min = t;
+            hitPoint = ray.origin + t * ray.direction;
+            normal = glm::normalize(hitPoint - sphere.center);
+            color = glm::vec3(sphere.color.r, sphere.color.g, sphere.color.b);
+            hit = true;
+        }
+    }
+
+    // Пересечение с плоскостью
+    float t;
+    if (plane.intersect(ray, t) && t < t_min) {
+        t_min = t;
+        hitPoint = ray.origin + t * ray.direction;
+        normal = glm::normalize(plane.normal);
+        color = glm::vec3(plane.color.r, plane.color.g, plane.color.b);
+        hit = true;
+    }
+
+    if (hit) {
+        glm::vec3 viewDir = glm::normalize(-ray.direction);
+        glm::vec3 lightDir = glm::normalize(lightPos - hitPoint);
+        glm::vec3 shadedColor = phongShading(hitPoint, normal, viewDir, lightDir, sf::Color(color.r, color.g, color.b));
+        return sf::Color(glm::clamp(shadedColor.r, 0.0f, 1.0f) * 255,
+            glm::clamp(shadedColor.g, 0.0f, 1.0f) * 255,
+            glm::clamp(shadedColor.b, 0.0f, 1.0f) * 255);
+    }
+
+    return sf::Color(30, 30, 30); // Цвет фона
+}
+
+int main() {
+    // Настройка окна
+    sf::RenderWindow window(sf::VideoMode(800, 600), "Ray Tracing with Phong Shading");
+    window.setFramerateLimit(60);
+
+    std::vector<Sphere> spheres = {
+        {{0, 0, -5}, 1.0f, sf::Color::Red}
+    };
+
+    Plane plane = { {0, -1, 0}, {0, 1, 0}, sf::Color::Green };
+    glm::vec3 lightPos = { 5, 5, -5 };
+
+    sf::Image image;
+    image.create(800, 600, sf::Color::Black);
+
+    std::cout << "Controls:\n"
+        << "Q/A: Increase/Decrease Ambient Strength\n"
+        << "W/S: Increase/Decrease Diffuse Strength\n"
+        << "E/D: Increase/Decrease Specular Strength\n"
+        << "R/F: Increase/Decrease Shininess\n";
+
+    while (window.isOpen()) {
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed)
+                window.close();
+
+            // Управление параметрами модели Фонга
+            if (event.type == sf::Event::KeyPressed) {
+                if (event.key.code == sf::Keyboard::Q)
+                    ambientStrength = glm::clamp(ambientStrength + 0.1f, 0.0f, 1.0f);
+                if (event.key.code == sf::Keyboard::A)
+                    ambientStrength = glm::clamp(ambientStrength - 0.1f, 0.0f, 1.0f);
+
+                if (event.key.code == sf::Keyboard::W)
+                    diffuseStrength = glm::clamp(diffuseStrength + 0.1f, 0.0f, 2.0f);
+                if (event.key.code == sf::Keyboard::S)
+                    diffuseStrength = glm::clamp(diffuseStrength - 0.1f, 0.0f, 2.0f);
+
+                if (event.key.code == sf::Keyboard::E)
+                    specularStrength = glm::clamp(specularStrength + 0.1f, 0.0f, 1.0f);
+                if (event.key.code == sf::Keyboard::D)
+                    specularStrength = glm::clamp(specularStrength - 0.1f, 0.0f, 1.0f);
+
+                if (event.key.code == sf::Keyboard::R)
+                    shininess = glm::clamp(shininess + 2, 1, 128);
+                if (event.key.code == sf::Keyboard::F)
+                    shininess = glm::clamp(shininess - 2, 1, 128);
+
+                std::cout << "Ambient: " << ambientStrength
+                    << ", Diffuse: " << diffuseStrength
+                    << ", Specular: " << specularStrength
+                    << ", Shininess: " << shininess << std::endl;
+            }
+        }
+
+        // Трассировка лучей
+        for (int y = 0; y < 600; ++y) {
+            for (int x = 0; x < 800; ++x) {
+                float u = (x - 400.0f) / 400.0f;
+                float v = (300.0f - y) / 300.0f;
+                Ray ray = { {0, 0, 0}, glm::normalize(glm::vec3(u, v, -1)) };
+                image.setPixel(x, y, traceRay(ray, spheres, plane, lightPos));
+            }
+        }
+
+        sf::Texture texture;
+        texture.loadFromImage(image);
+        sf::Sprite sprite(texture);
+
+        window.clear();
+        window.draw(sprite);
+        window.display();
+    }
+
+    return 0;
+}
